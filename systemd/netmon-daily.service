@@ -14,3 +14,17 @@ ExecStart=/opt/netmon/bin/aggregate_trailing.py
 ExecStart=/opt/netmon/bin/send_daily_report.py
 StandardOutput=journal
 StandardError=journal
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictRealtime=true
+ReadWritePaths=/var/lib/netmon /var/log/netmon

@@ -228,10 +228,15 @@ def render_html(date_label: str, yday: dict, trail: dict, bad_rows: list[dict],
         bg_for = {'outage': '#ffd6d6', 'partial': '#ffe0b2', 'degraded': '#fff2cc'}
         for r in bad_rows:
             note = r.get('error') or ''
-            url  = r.get('result_url') or ''
-            note_cell = escape(note) if note else (
-                f'<a href="{escape(url)}">result</a>' if url else ''
-            )
+            url  = (r.get('result_url') or '').strip()
+            # Only linkify https URLs — defense against a malformed/hostile
+            # result_url surfacing as javascript:/data: in a mail client.
+            if note:
+                note_cell = escape(note)
+            elif url.startswith('https://'):
+                note_cell = f'<a href="{escape(url)}">result</a>'
+            else:
+                note_cell = escape(url)
             bg = bg_for.get(r.get('status', ''), '#fff')
             parts.append(
                 f'<tr>'

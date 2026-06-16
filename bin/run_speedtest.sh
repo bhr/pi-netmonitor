@@ -97,7 +97,11 @@ else
 fi
 
 csv_quote() {
-    local s="${1//\"/\"\"}"
+    # RFC 4180-ish: wrap in quotes, double embedded quotes, drop CR/LF so a
+    # field can't break the row format if upstream data contains a newline.
+    local s="${1//$'\r'/}"
+    s="${s//$'\n'/ }"
+    s="${s//\"/\"\"}"
     printf '"%s"' "$s"
 }
 

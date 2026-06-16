@@ -37,11 +37,14 @@ Deploy targets on the Pi:
 
 ## Install
 
+Replace `<user>` with your account on the Pi and `<host>` with its hostname or
+LAN address (e.g. `pi`, `pi.local`, or `192.168.x.y`).
+
 From your workstation:
 
 ```bash
-scp -r pi benedikt@192.168.5.96:~/
-ssh benedikt@192.168.5.96 'sudo bash ~/pi/setup.sh'
+scp -r pi <user>@<host>:~/
+ssh <user>@<host> 'sudo bash ~/pi/setup.sh'
 ```
 
 The installer is idempotent — re-run it any time the conf changes.
@@ -49,12 +52,17 @@ The installer is idempotent — re-run it any time the conf changes.
 After the first run, edit the SMTP credentials and recipient on the Pi:
 
 ```bash
-ssh benedikt@192.168.5.96 'sudo nano /etc/netmon/netmon.conf'
-ssh benedikt@192.168.5.96 'sudo bash ~/pi/setup.sh'   # re-run to regen ~netmon/.msmtprc
+ssh <user>@<host> 'sudo nano /etc/netmon/netmon.conf'
+ssh <user>@<host> 'sudo bash ~/pi/setup.sh'   # re-run to regen ~netmon/.msmtprc
 ```
 
 Look for the line `wrote /var/lib/netmon/.msmtprc (host=..., user=...)` in the
 output to confirm the SMTP config was generated.
+
+> `setup.sh` adds the official Ookla apt repository via the standard
+> `curl … | bash` install snippet from packagecloud.io. If you'd rather not
+> pipe a remote script to bash, install the `speedtest` package by hand
+> first; the installer skips that step when `speedtest` is already on `PATH`.
 
 ## Configuration
 
@@ -91,23 +99,23 @@ needed (the Python scripts re-read `netmon.conf` each invocation, and
 
 ```bash
 # Both timers should show next-run times:
-ssh benedikt@192.168.5.96 'systemctl list-timers "netmon-*"'
+ssh <user>@<host> 'systemctl list-timers "netmon-*"'
 
 # Force one speedtest run and inspect the row:
-ssh benedikt@192.168.5.96 'sudo systemctl start netmon-speedtest.service'
-ssh benedikt@192.168.5.96 "tail -n 1 /var/lib/netmon/raw/speedtests-\$(date -u +%Y-%m).csv"
+ssh <user>@<host> 'sudo systemctl start netmon-speedtest.service'
+ssh <user>@<host> "tail -n 1 /var/lib/netmon/raw/speedtests-\$(date -u +%Y-%m).csv"
 
 # Force the full daily pipeline (aggregate → trailing → email):
-ssh benedikt@192.168.5.96 'sudo systemctl start netmon-daily.service && sudo journalctl -u netmon-daily -n 30 --no-pager'
+ssh <user>@<host> 'sudo systemctl start netmon-daily.service && sudo journalctl -u netmon-daily -n 30 --no-pager'
 ```
 
 To exercise the outage path:
 
 ```bash
-ssh benedikt@192.168.5.96 'sudo iptables -I OUTPUT -d 1.1.1.1 -j DROP; sudo iptables -I OUTPUT -d 8.8.8.8 -j DROP'
-ssh benedikt@192.168.5.96 'sudo systemctl start netmon-speedtest.service'
+ssh <user>@<host> 'sudo iptables -I OUTPUT -d 1.1.1.1 -j DROP; sudo iptables -I OUTPUT -d 8.8.8.8 -j DROP'
+ssh <user>@<host> 'sudo systemctl start netmon-speedtest.service'
 # confirm a status=outage row, then:
-ssh benedikt@192.168.5.96 'sudo iptables -D OUTPUT -d 1.1.1.1 -j DROP; sudo iptables -D OUTPUT -d 8.8.8.8 -j DROP'
+ssh <user>@<host> 'sudo iptables -D OUTPUT -d 1.1.1.1 -j DROP; sudo iptables -D OUTPUT -d 8.8.8.8 -j DROP'
 ```
 
 To exercise the threshold path: set `THRESH_DOWN_MBPS=99999` in the conf, run
@@ -149,7 +157,7 @@ day after install for the first complete report, or trigger
 **`speedtest: License not accepted`**
 Run once interactively as the netmon user:
 ```bash
-ssh benedikt@192.168.5.96 'sudo -u netmon speedtest --accept-license --accept-gdpr'
+ssh <user>@<host> 'sudo -u netmon speedtest --accept-license --accept-gdpr'
 ```
 
 ## Logs
@@ -157,3 +165,33 @@ ssh benedikt@192.168.5.96 'sudo -u netmon speedtest --accept-license --accept-gd
 - Per-run speedtest output:  `journalctl -u netmon-speedtest -f`
 - Daily pipeline output:     `journalctl -u netmon-daily -f`
 - msmtp send log:            `/var/log/netmon/msmtp.log`
+
+## Security model
+
+- `/etc/netmon/netmon.conf` is the only secret-bearing file in this repo's
+  install path. It is mode `0640 root:netmon` — only `root` can write it,
+  only `root` and processes running as `netmon` can read it.
+- The conf is **sourced as bash** by `setup.sh` (running as root) and
+  `run_speedtest.sh` (running as `netmon`). Treat it like an executable
+  shell script — anything you put in the value of a variable will be
+  evaluated by the shell. The Python scripts use a separate regex parser
+  and do not eval the conf.
+- The SMTP password lives in `/var/lib/netmon/.msmtprc`, mode `0600
+  netmon:netmon`. It is generated from the conf by `setup.sh`; the password
+  never leaves the Pi.
+- The speedtest binary is closed-source from Ookla; it talks to
+  `speedtest.net` servers over HTTPS. If you want to avoid that, swap
+  `run_speedtest.sh` for an iperf3-against-your-own-target version — the
+  CSV columns will still match.
+- `setup.sh` adds the Ookla apt repo using their official `curl … | bash`
+  install snippet, which is the standard antipattern for installing a
+  third-party Debian repo. The snippet is hosted by packagecloud.io. If
+  you'd rather not pipe a remote script to bash, install the `speedtest`
+  package by hand first; the installer skips that step when `speedtest` is
+  already on `PATH`.
+
+## License
+
+This is a personal-project monitor; treat the code in this repo as MIT/0-BSD
+unless a `LICENSE` file says otherwise. The Ookla speedtest CLI it invokes
+has its own license, which it asks you to accept on first run.
