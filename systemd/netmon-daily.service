@@ -1,0 +1,16 @@
+[Unit]
+Description=netmon — daily roll-up + 5-day trailing + email report
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=netmon
+Group=netmon
+Nice=10
+IOSchedulingClass=idle
+ExecStart=/opt/netmon/bin/aggregate_daily.py
+ExecStart=/opt/netmon/bin/aggregate_trailing.py
+ExecStart=/opt/netmon/bin/send_daily_report.py
+StandardOutput=journal
+StandardError=journal

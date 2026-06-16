@@ -1,0 +1,14 @@
+[Unit]
+Description=netmon — run speedtest and append a row to the monthly CSV shard
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=netmon
+Group=netmon
+Nice=10
+IOSchedulingClass=idle
+ExecStart=/opt/netmon/bin/run_speedtest.sh
+StandardOutput=journal
+StandardError=journal

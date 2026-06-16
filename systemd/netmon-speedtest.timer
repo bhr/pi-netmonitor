@@ -1,0 +1,11 @@
+[Unit]
+Description=netmon — fire run_speedtest every 5 minutes
+
+[Timer]
+OnCalendar=*:0/5
+Persistent=true
+AccuracySec=15s
+Unit=netmon-speedtest.service
+
+[Install]
+WantedBy=timers.target

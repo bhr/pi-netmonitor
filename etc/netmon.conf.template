@@ -1,0 +1,30 @@
+# /etc/netmon/netmon.conf — read by every netmon script.
+# Format is shell-style: KEY="value". Comments start with '#'.
+# This file is sourced by run_speedtest.sh (set -a) and parsed by the Python scripts.
+
+# --- SMTP relay (used to materialize /etc/msmtprc and by send_daily_report.py) ---
+SMTP_HOST="smtp.gmail.com"
+SMTP_PORT="587"
+SMTP_USER="you@gmail.com"
+SMTP_PASS="REPLACE_WITH_APP_PASSWORD"
+SMTP_FROM="netmon@your.host"
+REPORT_TO="you@example.com"
+
+# --- "Bad connection" thresholds. A speedtest run that breaches any of these
+#     is recorded as status=degraded; outages are detected from ping failures. ---
+THRESH_DOWN_MBPS=150
+THRESH_UP_MBPS=5
+THRESH_PING_MS=80
+THRESH_JITTER_MS=20
+THRESH_LOSS_PCT=1.0
+
+# --- ICMP probes used to distinguish total outage from speedtest-server outage ---
+PING_TARGET_PRIMARY="1.1.1.1"
+PING_TARGET_SECONDARY="8.8.8.8"
+
+# --- Retention. Monthly raw shards older than this many days are deleted by the
+#     daily aggregator. Aggregate files (daily.csv, trailing5.csv) are kept forever. ---
+RAW_RETENTION_DAYS=90
+
+# --- Time zone used to bucket "yesterday" / "trailing 5 days". Blank = system local time. ---
+TIMEZONE=""

@@ -1,0 +1,10 @@
+[Unit]
+Description=netmon — fire the daily aggregate + email pipeline at 06:00 local
+
+[Timer]
+OnCalendar=*-*-* 06:00:00
+Persistent=true
+Unit=netmon-daily.service
+
+[Install]
+WantedBy=timers.target
