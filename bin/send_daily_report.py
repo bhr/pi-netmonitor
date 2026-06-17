@@ -137,6 +137,16 @@ def f_or_none(v) -> float | None:
         return None
 
 
+def metric_breach_bg(metric_key: str, value, thresholds: dict) -> str:
+    """Inline 'background:#…;' style when the metric breaches its threshold, else ''."""
+    v = f_or_none(value)
+    th = thresholds.get(metric_key)
+    if v is None or th is None:
+        return ''
+    breached = (v < th) if HIGHER_IS_BETTER[metric_key] else (v > th)
+    return 'background:#ffd6d6;' if breached else ''
+
+
 def render_html(date_label: str, yday: dict, trail: dict, bad_rows: list[dict],
                 conf: dict[str, str]) -> str:
     thresholds = {
@@ -158,6 +168,26 @@ def render_html(date_label: str, yday: dict, trail: dict, bad_rows: list[dict],
     outages = int(yday.get('outages') or 0)
     summary = f'{runs} runs, {bad} bad-event row(s), {outages} outage(s).'
     parts.append(f'<p style="font-family:sans-serif;color:#444;">{escape(summary)}</p>')
+
+    swatch = ('display:inline-block;width:10px;height:10px;border:1px solid #ccc;'
+              'vertical-align:middle;margin-right:4px;')
+    parts.append(
+        '<div style="font-family:sans-serif;font-size:11px;color:#888;'
+        'margin:6px 0 16px;line-height:1.7;">'
+        f'<b style="color:#666;">Thresholds:</b> '
+        f'download ≥ {fmt(thresholds.get("down"))} Mbps · '
+        f'upload ≥ {fmt(thresholds.get("up"))} Mbps · '
+        f'ping ≤ {fmt(thresholds.get("ping"))} ms · '
+        f'jitter ≤ {fmt(thresholds.get("jitter"))} ms · '
+        f'loss ≤ {fmt(thresholds.get("loss"))}%'
+        '<br>'
+        f'<b style="color:#666;">Colors:</b> '
+        f'<span style="{swatch}background:#ffd6d6;"></span>outage / threshold breach &nbsp; '
+        f'<span style="{swatch}background:#ffe0b2;"></span>partial &nbsp; '
+        f'<span style="{swatch}background:#fff2cc;"></span>degraded or below trailing avg &nbsp; '
+        f'<span style="{swatch}background:#e6f4ea;"></span>ok'
+        '</div>'
+    )
 
     parts.append('<h3 style="font-family:sans-serif;">Yesterday vs. 5-day trailing</h3>')
     parts.append('<table style="border-collapse:collapse;font-family:sans-serif;font-size:13px;">')
@@ -238,15 +268,20 @@ def render_html(date_label: str, yday: dict, trail: dict, bad_rows: list[dict],
             else:
                 note_cell = escape(url)
             bg = bg_for.get(r.get('status', ''), '#fff')
+            down_bg   = metric_breach_bg('down',   r.get('download_mbps'), thresholds)
+            up_bg     = metric_breach_bg('up',     r.get('upload_mbps'),   thresholds)
+            ping_bg   = metric_breach_bg('ping',   r.get('ping_ms'),       thresholds)
+            jitter_bg = metric_breach_bg('jitter', r.get('jitter_ms'),     thresholds)
+            loss_bg   = metric_breach_bg('loss',   r.get('loss_pct'),      thresholds)
             parts.append(
                 f'<tr>'
                 f'<td style="{style_td}">{escape(r.get("timestamp_iso", ""))}</td>'
                 f'<td style="{style_td}background:{bg};">{escape(r.get("status", ""))}</td>'
-                f'<td style="{style_td}">{fmt(r.get("download_mbps"))}</td>'
-                f'<td style="{style_td}">{fmt(r.get("upload_mbps"))}</td>'
-                f'<td style="{style_td}">{fmt(r.get("ping_ms"))}</td>'
-                f'<td style="{style_td}">{fmt(r.get("jitter_ms"))}</td>'
-                f'<td style="{style_td}">{fmt(r.get("loss_pct"))}</td>'
+                f'<td style="{style_td}{down_bg}">{fmt(r.get("download_mbps"))}</td>'
+                f'<td style="{style_td}{up_bg}">{fmt(r.get("upload_mbps"))}</td>'
+                f'<td style="{style_td}{ping_bg}">{fmt(r.get("ping_ms"))}</td>'
+                f'<td style="{style_td}{jitter_bg}">{fmt(r.get("jitter_ms"))}</td>'
+                f'<td style="{style_td}{loss_bg}">{fmt(r.get("loss_pct"))}</td>'
                 f'<td style="{style_td}">{note_cell}</td>'
                 f'</tr>'
             )
