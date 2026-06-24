@@ -29,6 +29,23 @@ METRICS = [
 ]
 HIGHER_IS_BETTER = {'down': True, 'up': True, 'ping': False, 'jitter': False, 'loss': False}
 
+# Maps each metric key to its raw-CSV column, for per-threshold pass-rate counting.
+METRIC_RAW_FIELD = {
+    'down':   'download_mbps',
+    'up':     'upload_mbps',
+    'ping':   'ping_ms',
+    'jitter': 'jitter_ms',
+    'loss':   'loss_pct',
+}
+
+# Parts of day for the per-period breakdown, as local-hour ranges [start, end).
+PARTS_OF_DAY = [
+    ('Night',      0,  6),
+    ('Morning',    6, 12),
+    ('Afternoon', 12, 18),
+    ('Evening',   18, 24),
+]
+
 
 def load_conf(path: str) -> dict[str, str]:
     conf: dict[str, str] = {}
@@ -148,7 +165,7 @@ def metric_breach_bg(metric_key: str, value, thresholds: dict) -> str:
 
 
 def render_html(date_label: str, yday: dict, trail: dict, bad_rows: list[dict],
-                conf: dict[str, str]) -> str:
+                conf: dict[str, str], all_rows: list[dict], tz: dt.tzinfo) -> str:
     thresholds = {
         'down':   f_or_none(conf.get('THRESH_DOWN_MBPS')),
         'up':     f_or_none(conf.get('THRESH_UP_MBPS')),
@@ -156,6 +173,19 @@ def render_html(date_label: str, yday: dict, trail: dict, bad_rows: list[dict],
         'jitter': f_or_none(conf.get('THRESH_JITTER_MS')),
         'loss':   f_or_none(conf.get('THRESH_LOSS_PCT')),
     }
+
+    def to_local_str(iso: str) -> str:
+        """Render a stored UTC ISO timestamp as 'YYYY-MM-DD HH:MM:SS' in local time."""
+        try:
+            ts = dt.datetime.fromisoformat((iso or '').replace('Z', '+00:00')).astimezone(tz)
+        except (ValueError, TypeError):
+            return escape(iso or '')
+        return ts.strftime('%Y-%m-%d %H:%M:%S')
+
+    try:
+        tz_label = dt.datetime.fromisoformat(date_label).replace(tzinfo=tz, hour=12).tzname() or 'local'
+    except ValueError:
+        tz_label = 'local'
 
     style_th = 'padding:6px 10px;text-align:left;background:#f0f0f0;border:1px solid #ccc;'
     style_td = 'padding:6px 10px;border:1px solid #ccc;'
@@ -220,9 +250,22 @@ def render_html(date_label: str, yday: dict, trail: dict, bad_rows: list[dict],
     parts.append('</table>')
 
     parts.append('<h3 style="font-family:sans-serif;">Run-status breakdown</h3>')
+
+    runs_total = int(yday.get('runs') or 0)
+    ok_n       = int(yday.get('ok') or 0)
+    degraded_n = int(yday.get('degraded') or 0)
+    partial_n  = int(yday.get('partial') or 0)
+    outage_n   = int(yday.get('outages') or 0)
+
+    def pct(n: int, d: int) -> str:
+        return f'{n / d * 100:.1f}%' if d > 0 else '—'
+
+    # Status counts, plus each status as a share of all runs. The headline figure
+    # is "% ok" = ok runs / all runs.
     parts.append('<table style="border-collapse:collapse;font-family:sans-serif;font-size:13px;">')
     parts.append(
         f'<tr>'
+        f'<th style="{style_th}"></th>'
         f'<th style="{style_th}">ok</th>'
         f'<th style="{style_th}">degraded</th>'
         f'<th style="{style_th}">partial</th>'
@@ -230,13 +273,133 @@ def render_html(date_label: str, yday: dict, trail: dict, bad_rows: list[dict],
         f'<th style="{style_th}">total</th>'
         f'</tr>'
         f'<tr>'
-        f'<td style="{style_td}">{fmt(yday.get("ok"))}</td>'
-        f'<td style="{style_td}background:#fff2cc;">{fmt(yday.get("degraded"))}</td>'
-        f'<td style="{style_td}background:#ffe0b2;">{fmt(yday.get("partial"))}</td>'
-        f'<td style="{style_td}background:#ffd6d6;">{fmt(yday.get("outages"))}</td>'
-        f'<td style="{style_td}">{fmt(yday.get("runs"))}</td>'
-        f'</tr></table>'
+        f'<td style="{style_th}">count</td>'
+        f'<td style="{style_td}">{ok_n}</td>'
+        f'<td style="{style_td}background:#fff2cc;">{degraded_n}</td>'
+        f'<td style="{style_td}background:#ffe0b2;">{partial_n}</td>'
+        f'<td style="{style_td}background:#ffd6d6;">{outage_n}</td>'
+        f'<td style="{style_td}">{runs_total}</td>'
+        f'</tr>'
+        f'<tr>'
+        f'<td style="{style_th}">% of total</td>'
+        f'<td style="{style_td}background:#e6f4ea;"><b>{pct(ok_n, runs_total)}</b></td>'
+        f'<td style="{style_td}">{pct(degraded_n, runs_total)}</td>'
+        f'<td style="{style_td}">{pct(partial_n, runs_total)}</td>'
+        f'<td style="{style_td}">{pct(outage_n, runs_total)}</td>'
+        f'<td style="{style_td}">{pct(runs_total, runs_total)}</td>'
+        f'</tr>'
+        f'</table>'
     )
+
+    # Per-threshold failure rate: share of all runs whose measured value breached
+    # each threshold. partial/outage runs carry no measurement, so they are not
+    # counted as a breach of any single threshold. Because one run can breach
+    # several thresholds at once, these do not sum to the degraded share above —
+    # they isolate which threshold drives the degraded runs.
+    th_total = len(all_rows)
+    parts.append(
+        '<p style="font-family:sans-serif;font-size:12px;color:#444;margin:14px 0 4px;">'
+        'Threshold failure rate — runs breaching each threshold &divide; all runs:'
+        '</p>'
+    )
+    parts.append('<table style="border-collapse:collapse;font-family:sans-serif;font-size:13px;">')
+    header_cells = ''.join(f'<th style="{style_th}">{escape(label)}</th>' for _, label, _ in METRICS)
+    parts.append(f'<tr><th style="{style_th}">Threshold</th>{header_cells}</tr>')
+
+    count_cells: list[str] = []
+    pct_cells: list[str] = []
+    for key, _, _ in METRICS:
+        th = thresholds.get(key)
+        field = METRIC_RAW_FIELD[key]
+        failed = 0
+        for r in all_rows:
+            v = f_or_none(r.get(field))
+            if v is None or th is None:
+                continue
+            breached = (v < th) if HIGHER_IS_BETTER[key] else (v > th)
+            if breached:
+                failed += 1
+        count_cells.append(f'<td style="{style_td}">{failed} / {th_total}</td>')
+        rate = (failed / th_total) if th_total > 0 else None
+        if rate is None:
+            bg = '#f5f5f5'
+        elif rate <= 0.05:
+            bg = '#e6f4ea'
+        elif rate <= 0.20:
+            bg = '#fff2cc'
+        else:
+            bg = '#ffd6d6'
+        pct_cells.append(f'<td style="{style_td}background:{bg};"><b>{pct(failed, th_total)}</b></td>')
+    parts.append(f'<tr><td style="{style_th}">failed</td>{"".join(count_cells)}</tr>')
+    parts.append(f'<tr><td style="{style_th}">% failed</td>{"".join(pct_cells)}</tr>')
+    parts.append('</table>')
+
+    # Same failure rate, split by part of day (local time). Each run is bucketed
+    # by its local hour; within a part the rate is breaches ÷ runs in that part.
+    parts.append(
+        '<p style="font-family:sans-serif;font-size:12px;color:#444;margin:16px 0 4px;">'
+        'Threshold failure rate by part of day — breaches &divide; runs in that part (local time):'
+        '</p>'
+    )
+    legend = ' &nbsp;·&nbsp; '.join(
+        f'<b>{escape(name)}</b> {lo:02d}:00–{hi - 1:02d}:59' for name, lo, hi in PARTS_OF_DAY
+    )
+    parts.append(
+        '<div style="font-family:sans-serif;font-size:11px;color:#888;margin:0 0 6px;">'
+        f'{legend}</div>'
+    )
+
+    period_rows: dict[str, list[dict]] = {name: [] for name, _, _ in PARTS_OF_DAY}
+    for r in all_rows:
+        try:
+            ts = dt.datetime.fromisoformat(
+                r['timestamp_iso'].replace('Z', '+00:00')).astimezone(tz)
+        except (ValueError, KeyError, TypeError):
+            continue
+        for name, lo, hi in PARTS_OF_DAY:
+            if lo <= ts.hour < hi:
+                period_rows[name].append(r)
+                break
+
+    parts.append('<table style="border-collapse:collapse;font-family:sans-serif;font-size:13px;">')
+    metric_headers = ''.join(f'<th style="{style_th}">{escape(label)}</th>' for _, label, _ in METRICS)
+    parts.append(
+        f'<tr><th style="{style_th}">Part of day</th>'
+        f'<th style="{style_th}">Runs</th>{metric_headers}</tr>'
+    )
+    for name, _, _ in PARTS_OF_DAY:
+        rs = period_rows[name]
+        n = len(rs)
+        cells: list[str] = []
+        for key, _, _ in METRICS:
+            th = thresholds.get(key)
+            field = METRIC_RAW_FIELD[key]
+            failed = 0
+            for r in rs:
+                v = f_or_none(r.get(field))
+                if v is None or th is None:
+                    continue
+                breached = (v < th) if HIGHER_IS_BETTER[key] else (v > th)
+                if breached:
+                    failed += 1
+            rate = (failed / n) if n > 0 else None
+            if rate is None:
+                bg = '#f5f5f5'
+            elif rate <= 0.05:
+                bg = '#e6f4ea'
+            elif rate <= 0.20:
+                bg = '#fff2cc'
+            else:
+                bg = '#ffd6d6'
+            cells.append(
+                f'<td style="{style_td}background:{bg};"><b>{pct(failed, n)}</b>'
+                f'<br><span style="font-size:11px;color:#888;">{failed}/{n}</span></td>'
+            )
+        parts.append(
+            f'<tr><td style="{style_th}">{escape(name)}</td>'
+            f'<td style="{style_td}">{n}</td>{"".join(cells)}</tr>'
+        )
+    parts.append('</table>')
 
     parts.append('<h3 style="font-family:sans-serif;">Bad-connection events</h3>')
     if not bad_rows:
@@ -245,7 +408,7 @@ def render_html(date_label: str, yday: dict, trail: dict, bad_rows: list[dict],
         parts.append('<table style="border-collapse:collapse;font-family:sans-serif;font-size:12px;">')
         parts.append(
             f'<tr>'
-            f'<th style="{style_th}">Time (UTC)</th>'
+            f'<th style="{style_th}">Time ({escape(tz_label)})</th>'
             f'<th style="{style_th}">Status</th>'
             f'<th style="{style_th}">Down</th>'
             f'<th style="{style_th}">Up</th>'
@@ -275,7 +438,7 @@ def render_html(date_label: str, yday: dict, trail: dict, bad_rows: list[dict],
             loss_bg   = metric_breach_bg('loss',   r.get('loss_pct'),      thresholds)
             parts.append(
                 f'<tr>'
-                f'<td style="{style_td}">{escape(r.get("timestamp_iso", ""))}</td>'
+                f'<td style="{style_td}">{to_local_str(r.get("timestamp_iso", ""))}</td>'
                 f'<td style="{style_td}background:{bg};">{escape(r.get("status", ""))}</td>'
                 f'<td style="{style_td}{down_bg}">{fmt(r.get("download_mbps"))}</td>'
                 f'<td style="{style_td}{up_bg}">{fmt(r.get("upload_mbps"))}</td>'
@@ -290,7 +453,7 @@ def render_html(date_label: str, yday: dict, trail: dict, bad_rows: list[dict],
     parts.append(
         '<p style="font-family:sans-serif;font-size:11px;color:#888;margin-top:18px;">'
         f'CSV attachments: yesterday raw, full daily aggregates, full 5-day trailing aggregates. '
-        f'Generated at {dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")} on this Pi.'
+        f'Generated at {dt.datetime.now(tz).strftime("%Y-%m-%d %H:%M:%S %Z")} on this Pi.'
         '</p>'
     )
     return ''.join(parts)
@@ -358,7 +521,7 @@ def main() -> int:
     raw_rows, raw_fields = read_raw_slice(start_utc, end_utc)
     bad_rows = [r for r in raw_rows if r.get('status') != 'ok']
 
-    html = render_html(date_label, yday, trail, bad_rows, conf)
+    html = render_html(date_label, yday, trail, bad_rows, conf, raw_rows, tz)
 
     msg = EmailMessage()
     msg['From'] = conf.get('SMTP_FROM') or conf.get('SMTP_USER', 'netmon@localhost')
