@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import csv
 import datetime as dt
 import io
@@ -71,13 +72,28 @@ def resolve_tz(conf: dict[str, str]) -> dt.tzinfo:
     return dt.datetime.now().astimezone().tzinfo or dt.timezone.utc
 
 
-def yesterday_window(tz: dt.tzinfo) -> tuple[dt.datetime, dt.datetime, str]:
-    now_local = dt.datetime.now(tz)
-    today_local = dt.datetime(now_local.year, now_local.month, now_local.day, tzinfo=tz)
-    start_local = today_local - dt.timedelta(days=1)
+def day_window(tz: dt.tzinfo, day: dt.date) -> tuple[dt.datetime, dt.datetime, str]:
+    """Local-day window [00:00, next-day 00:00) for `day`, as UTC bounds + label.
+
+    Building both midnights from the wall clock keeps this correct across DST
+    transitions (the resulting UTC span is 23/24/25 h as appropriate)."""
+    start_local = dt.datetime(day.year, day.month, day.day, tzinfo=tz)
+    end_local = start_local + dt.timedelta(days=1)
     return (start_local.astimezone(dt.timezone.utc),
-            today_local.astimezone(dt.timezone.utc),
+            end_local.astimezone(dt.timezone.utc),
             start_local.strftime('%Y-%m-%d'))
+
+
+def yesterday_window(tz: dt.tzinfo) -> tuple[dt.datetime, dt.datetime, str]:
+    yesterday = dt.datetime.now(tz).date() - dt.timedelta(days=1)
+    return day_window(tz, yesterday)
+
+
+def valid_date(s: str) -> dt.date:
+    try:
+        return dt.date.fromisoformat(s)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f'invalid date {s!r}; expected YYYY-MM-DD')
 
 
 def shards_for_range(start_utc: dt.datetime, end_utc: dt.datetime) -> list[Path]:
@@ -507,21 +523,43 @@ def send(msg: EmailMessage) -> None:
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(
+        description='Build and email the netmon daily report (defaults to yesterday).')
+    parser.add_argument(
+        '--date', type=valid_date, metavar='YYYY-MM-DD',
+        help='generate the report for this local day instead of yesterday')
+    parser.add_argument(
+        '--dry-run', action='store_true',
+        help='write the HTML report to stdout instead of emailing it (skips SMTP)')
+    args = parser.parse_args()
+
     conf = load_conf(CONF_PATH)
-    if not conf.get('REPORT_TO'):
-        sys.exit('netmon: REPORT_TO not set in ' + CONF_PATH)
-    if conf.get('SMTP_PASS', '').startswith('REPLACE_'):
-        sys.exit('netmon: SMTP_PASS still placeholder — edit ' + CONF_PATH)
+    if not args.dry_run:
+        if not conf.get('REPORT_TO'):
+            sys.exit('netmon: REPORT_TO not set in ' + CONF_PATH)
+        if conf.get('SMTP_PASS', '').startswith('REPLACE_'):
+            sys.exit('netmon: SMTP_PASS still placeholder — edit ' + CONF_PATH)
 
     tz = resolve_tz(conf)
-    start_utc, end_utc, date_label = yesterday_window(tz)
+    if args.date:
+        start_utc, end_utc, date_label = day_window(tz, args.date)
+        # For an explicit day, use the trailing row whose window ends on it.
+        trail = latest_row(TRAILING_CSV, where={'window_end': date_label}) or {}
+    else:
+        start_utc, end_utc, date_label = yesterday_window(tz)
+        trail = latest_row(TRAILING_CSV) or {}
 
     yday = latest_row(DAILY_CSV, where={'date': date_label}) or {}
-    trail = latest_row(TRAILING_CSV) or {}
     raw_rows, raw_fields = read_raw_slice(start_utc, end_utc)
     bad_rows = [r for r in raw_rows if r.get('status') != 'ok']
 
     html = render_html(date_label, yday, trail, bad_rows, conf, raw_rows, tz)
+
+    if args.dry_run:
+        sys.stdout.write(html)
+        print(f'send_daily_report: dry-run for {date_label} '
+              f'({len(raw_rows)} raw row(s)) — not sent', file=sys.stderr)
+        return 0
 
     msg = EmailMessage()
     msg['From'] = conf.get('SMTP_FROM') or conf.get('SMTP_USER', 'netmon@localhost')
